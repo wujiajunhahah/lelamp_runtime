@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+_DEFAULT_LED_COUNT = 64
+
 
 def execute_compiled_program(
     *,
@@ -22,9 +24,11 @@ def execute_compiled_program(
             rgb_service.dispatch("solid", tuple(lighting["rgb"]))
             light_event_count = 1
         elif mode == "gradient" and isinstance(lighting.get("palette"), list):
+            led_count = int(getattr(rgb_service, "led_count", _DEFAULT_LED_COUNT))
+            palette = [tuple(color) for color in lighting["palette"]]
             rgb_service.dispatch(
                 "paint",
-                [tuple(color) for color in lighting["palette"]],
+                _expand_gradient_palette(palette, led_count=max(1, led_count)),
             )
             light_event_count = 1
 
@@ -45,3 +49,32 @@ def _normalize_frame(frame: Any) -> dict[str, float]:
             key = f"{key}.pos"
         normalized[key] = float(value)
     return normalized
+
+
+def _expand_gradient_palette(
+    palette: list[tuple[int, int, int]],
+    *,
+    led_count: int,
+) -> list[tuple[int, int, int]]:
+    if not palette:
+        return [(0, 0, 0)] * led_count
+    if len(palette) == 1:
+        return [palette[0]] * led_count
+
+    stops = len(palette) - 1
+    colors: list[tuple[int, int, int]] = []
+    for index in range(led_count):
+        position = 0.0 if led_count <= 1 else index / (led_count - 1)
+        segment_position = min(position * stops, float(stops))
+        left_index = min(int(segment_position), stops - 1)
+        right_index = left_index + 1
+        blend = segment_position - left_index
+        left = palette[left_index]
+        right = palette[right_index]
+        colors.append(
+            tuple(
+                int(round(left[channel] + (right[channel] - left[channel]) * blend))
+                for channel in range(3)
+            )
+        )
+    return colors
