@@ -33,6 +33,7 @@ def compile_action_program(
             resolved = _resolve_joint_target(
                 current=float(frame[joint_name]),
                 target=float(joint_cfg["target"]),
+                role=str(joint_cfg["role"]),
                 joint_cfg=joints_cfg[joint_name],
                 exaggeration=float(patched["style"]["exaggeration"]),
             )
@@ -88,6 +89,7 @@ def _resolve_joint_target(
     *,
     current: float,
     target: float,
+    role: str,
     joint_cfg: dict[str, object],
     exaggeration: float,
 ) -> dict[str, object]:
@@ -98,7 +100,10 @@ def _resolve_joint_target(
     adjustments: list[str] = []
 
     if desired < hard_low or desired > hard_high:
-        return {"decision": "rejected", "value": current, "adjustments": adjustments}
+        if role == "lead":
+            return {"decision": "rejected", "value": current, "adjustments": adjustments}
+        adjustments.append(f"dropped_{role}_outside_hard_window")
+        return {"decision": "clipped", "value": current, "adjustments": adjustments}
 
     if desired < protected_low or desired > protected_high:
         desired = max(protected_low, min(protected_high, desired))
