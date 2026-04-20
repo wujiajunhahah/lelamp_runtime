@@ -23,7 +23,10 @@ def test_compile_scene_lowers_gesture_and_light_nodes():
         "motion": [("play", "nod"), ("play", "wake_up")],
         "light": [
             ("solid", (255, 170, 70)),
-            ("paint", [(255, 180, 90), (255, 120, 40)]),
+            (
+                "paint",
+                [(255, 180, 90), (255, 120, 40)] * 32,
+            ),
         ],
     }
 
@@ -88,6 +91,37 @@ def test_execute_compiled_scene_coalesces_multi_step_motion_and_light_sequences(
                 ("solid", (90, 180, 255)),
             ],
         )
+    ]
+
+
+def test_compile_scene_expands_light_patterns_to_full_led_strip():
+    compiled = compile_scene(
+        {
+            "body": [],
+            "light": [
+                {"type": "gradient", "palette": [[90, 170, 255], [220, 245, 255]]},
+                {"type": "sparkle", "palette": [[255, 180, 70], [255, 120, 40], [70, 255, 120]]},
+            ],
+        }
+    )
+
+    gradient = compiled["light"][0]
+    sparkle = compiled["light"][1]
+
+    assert gradient[0] == "paint"
+    assert len(gradient[1]) == 64
+    assert gradient[1][0] == (90, 170, 255)
+    assert gradient[1][-1] == (220, 245, 255)
+
+    assert sparkle[0] == "paint"
+    assert len(sparkle[1]) == 64
+    assert sparkle[1][:6] == [
+        (255, 180, 70),
+        (255, 120, 40),
+        (70, 255, 120),
+        (255, 180, 70),
+        (255, 120, 40),
+        (70, 255, 120),
     ]
 
 

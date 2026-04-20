@@ -51,6 +51,17 @@ _LIGHT_STEPS = {
     "wake_up": {"type": "gradient", "palette": [[255, 170, 70], [255, 235, 180]]},
     "idle": {"type": "solid", "rgb": [255, 200, 135]},
 }
+_GENERAL_SEQUENCE_PRESETS: tuple[tuple[str, ...], ...] = (
+    ("happy_wiggle", "excited", "scanning"),
+    ("curious", "nod", "headshake"),
+    ("wake_up", "curious", "excited"),
+    ("shy", "shock", "sad"),
+)
+_NOVEL_SEQUENCE_PRESETS: tuple[tuple[str, ...], ...] = (
+    ("curious", "headshake", "shock"),
+    ("shy", "nod", "sad"),
+    ("wake_up", "curious", "headshake"),
+)
 
 
 class GLMManager:
@@ -174,6 +185,23 @@ def _scene_proposal_for_text(text: str) -> dict[str, Any] | None:
             explicit_recordings,
             intent="custom_sequence",
             summary="User requested a custom motion sequence.",
+        )
+    if _contains_any(
+        lowered,
+        text,
+        "完全没有做过",
+        "没做过",
+        "新的动作",
+        "新一点",
+        "换一组",
+        "换个组合",
+        "别老那几个",
+        "不一样",
+    ):
+        return _build_recording_sequence_proposal(
+            _pick_sequence_preset(text, presets=_NOVEL_SEQUENCE_PRESETS),
+            intent="novel_sequence",
+            summary="User requested a fresh motion sequence.",
         )
     if _contains_any(
         lowered,
@@ -326,7 +354,7 @@ def _select_demo_recordings(text: str) -> list[str]:
         return ["excited", "happy_wiggle", "shock"]
     if _contains_any(lowered, text, "扫描", "扫一圈", "东张西望", "scanning"):
         return ["scanning", "curious", "nod"]
-    return ["happy_wiggle", "excited", "scanning"]
+    return _pick_sequence_preset(text, presets=_GENERAL_SEQUENCE_PRESETS)
 
 
 def _build_recording_sequence_proposal(
@@ -346,3 +374,14 @@ def _build_recording_sequence_proposal(
             "light": light,
         },
     }
+
+
+def _pick_sequence_preset(
+    text: str,
+    *,
+    presets: tuple[tuple[str, ...], ...],
+) -> list[str]:
+    if not presets:
+        return ["happy_wiggle", "excited", "scanning"]
+    fingerprint = sum(ord(char) for char in text)
+    return list(presets[fingerprint % len(presets)])

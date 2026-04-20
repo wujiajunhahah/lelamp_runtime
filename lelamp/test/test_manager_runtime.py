@@ -180,6 +180,29 @@ def test_glm_manager_escalates_generic_motion_demo_into_multi_step_sequence():
     assert len(scene["light"]) >= 2
 
 
+def test_glm_manager_picks_non_default_sequence_for_novel_motion_request():
+    manager = GLMManager(settings=SimpleNamespace())
+
+    snapshot = manager.process(
+        items=[
+            {
+                "kind": "conversation.user_turn",
+                "item_id": "itm_user_1",
+                "payload": {"text": "今儿来个完全没有做过的动作，换一组新的"},
+            }
+        ],
+        previous_snapshot=None,
+    )
+
+    scene = snapshot["_scene_proposal"]["scene"]
+    assert scene["body"] != [
+        {"type": "pose", "name": "happy_wiggle"},
+        {"type": "pose", "name": "excited"},
+        {"type": "pose", "name": "scanning"},
+    ]
+    assert len(scene["body"]) >= 3
+
+
 def test_manager_runtime_emits_scene_and_action_items_for_manager_proposal(tmp_path):
     session_id = "sess_2026-04-19_20-00-00"
     user_turn = project_conversation_user_turn(
