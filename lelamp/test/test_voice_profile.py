@@ -109,6 +109,26 @@ class VoiceProfileTests(unittest.TestCase):
         self.assertIn("<express>", instructions)
         self.assertIn("不要把它们当台词输出", instructions)
 
+    def test_chinese_profile_bans_self_narration_and_babysitting_language(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            settings = load_runtime_settings()
+
+        instructions = build_agent_instructions(settings)
+
+        self.assertIn("不要自称“灯灯”", instructions)
+        self.assertIn("不要说“像不像在说", instructions)
+        self.assertIn("不要说“我就在这儿陪着你”", instructions)
+
+    def test_chinese_profile_forces_terse_clarification_and_care_lines(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            settings = load_runtime_settings()
+
+        instructions = build_agent_instructions(settings)
+
+        self.assertIn("没听清时优先只说“嗯？你说啥？”", instructions)
+        self.assertIn("提醒休息时最多一句到两句", instructions)
+        self.assertIn("不要连续追问“是不是", instructions)
+
     def test_memory_header_is_prepended_before_voice_profile(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
             settings = load_runtime_settings()
