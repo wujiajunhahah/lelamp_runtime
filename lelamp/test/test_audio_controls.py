@@ -49,6 +49,28 @@ class AudioControlsTests(unittest.TestCase):
             ],
         )
 
+    @patch("lelamp.audio_controls.os.geteuid", return_value=1000)
+    @patch("lelamp.audio_controls.getpass.getuser", return_value="wujiajun")
+    def test_build_amixer_volume_commands_keeps_gain_stages_high_when_lowering_volume(self, *_mocks) -> None:
+        commands = build_amixer_volume_commands(
+            audio_user="wujiajun",
+            card_index=2,
+            volume_percent=50,
+        )
+
+        self.assertEqual(
+            commands,
+            [
+                ["amixer", "-c", "2", "sset", "PCM", "100%"],
+                ["amixer", "-c", "2", "sset", "Line", "50%"],
+                ["amixer", "-c", "2", "sset", "Line", "unmute"],
+                ["amixer", "-c", "2", "sset", "Line DAC", "100%"],
+                ["amixer", "-c", "2", "sset", "HP", "50%"],
+                ["amixer", "-c", "2", "sset", "HP", "unmute"],
+                ["amixer", "-c", "2", "sset", "HP DAC", "100%"],
+            ],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
