@@ -871,7 +871,7 @@ class QwenRealtimeTests(unittest.TestCase):
         self.assertEqual(dumped["session"]["turn_detection"]["type"], "server_vad")
         self.assertNotIn("model", dumped["session"])
 
-    def test_qwen_keeps_openai_style_empty_tool_schema(self) -> None:
+    def test_qwen_only_exposes_volume_tool_to_realtime_model(self) -> None:
         import main
         import smooth_animation
 
@@ -917,15 +917,9 @@ class QwenRealtimeTests(unittest.TestCase):
 
         dumped = asyncio.run(_build_event())
         tools = dumped["session"]["tools"]
-        get_available_recordings_tool = next(
-            tool for tool in tools if tool["name"] == "get_available_recordings"
-        )
+        self.assertEqual([tool["name"] for tool in tools], ["set_volume"])
 
-        self.assertEqual(get_available_recordings_tool["parameters"]["type"], "object")
-        self.assertEqual(get_available_recordings_tool["parameters"]["properties"], {})
-        self.assertEqual(get_available_recordings_tool["parameters"].get("required"), [])
-
-    def test_qwen_expression_tool_exposes_small_style_enum(self) -> None:
+    def test_qwen_volume_tool_exposes_integer_percentage_schema(self) -> None:
         import main
         import smooth_animation
 
@@ -971,15 +965,11 @@ class QwenRealtimeTests(unittest.TestCase):
 
         dumped = asyncio.run(_build_event())
         tools = dumped["session"]["tools"]
-        express_tool = next(tool for tool in tools if tool["name"] == "express")
-        style_schema = express_tool["parameters"]["properties"]["style"]
+        volume_tool = next(tool for tool in tools if tool["name"] == "set_volume")
+        volume_schema = volume_tool["parameters"]["properties"]["volume_percent"]
 
-        self.assertEqual(style_schema["type"], "string")
-        self.assertEqual(
-            style_schema["enum"],
-            ["caring", "worried", "sad", "happy", "curious", "shocked", "calm", "greeting", "celebrate"],
-        )
-        self.assertEqual(express_tool["parameters"]["required"], ["style"])
+        self.assertEqual(volume_schema["type"], "integer")
+        self.assertEqual(volume_tool["parameters"]["required"], ["volume_percent"])
 
     def test_smooth_animation_lamp_stays_available_when_motion_start_fails(self) -> None:
         import smooth_animation
@@ -1341,6 +1331,50 @@ class QwenRealtimeTests(unittest.TestCase):
             self.assertIn("interrupted", str(exc_info.exception))
 
         asyncio.run(_exercise_interrupt())
+
+    def test_qwen_can_suppress_next_response_created(self) -> None:
+        from livekit.plugins.openai.realtime import realtime_model as oai_rt
+
+        async def _exercise_suppress_next_response() -> None:
+            with patch.dict(
+                os.environ,
+                {
+                    "MODEL_PROVIDER": "qwen",
+                    "MODEL_API_KEY": "test-key",
+                    "MODEL_BASE_URL": "https://dashscope.aliyuncs.com/api-ws/v1/realtime",
+                    "MODEL_NAME": "qwen3.5-omni-plus-realtime",
+                    "MODEL_VOICE": "Tina",
+                },
+                clear=True,
+            ):
+                settings = load_runtime_settings()
+                llm = build_realtime_model(settings)
+
+            session = llm.session()
+            session._main_atask.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await session._main_atask
+
+            with patch.object(session, "send_event") as send_event, patch.object(
+                session, "emit"
+            ) as emit:
+                session.suppress_next_response()
+                session._handle_response_created(
+                    oai_rt.ResponseCreatedEvent.construct(
+                        type="response.created",
+                        response=oai_rt.Response.construct(id="resp_suppressed"),
+                    )
+                )
+
+            self.assertIn("resp_suppressed", session._ignored_response_ids)
+            self.assertNotIn("resp_suppressed", session._active_response_ids)
+            self.assertIsNone(session._current_response_id)
+            self.assertFalse(session._suppress_next_response_creation)
+            send_event.assert_called_once()
+            self.assertEqual(send_event.call_args.args[0].type, "response.cancel")
+            emit.assert_not_called()
+
+        asyncio.run(_exercise_suppress_next_response())
 
     def test_qwen_detects_capacity_limited_close_frames(self) -> None:
         from lelamp.qwen_realtime import QwenRealtimeSession

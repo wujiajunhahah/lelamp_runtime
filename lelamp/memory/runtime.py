@@ -471,6 +471,16 @@ class AgentMemoryRuntime:
         if session is None or not hasattr(session, "interrupt"):
             return False
         try:
+            suppress_targets = [session]
+            activity = getattr(session, "_activity", None)
+            if activity is not None:
+                realtime_session = getattr(activity, "realtime_llm_session", None)
+                if realtime_session is not None:
+                    suppress_targets.append(realtime_session)
+            for target in suppress_targets:
+                suppress_next_response = getattr(target, "suppress_next_response", None)
+                if callable(suppress_next_response):
+                    suppress_next_response()
             session.interrupt()
         except Exception:
             _logger.exception("memory runtime: failed to interrupt assistant reply")

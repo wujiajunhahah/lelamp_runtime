@@ -19,8 +19,8 @@ class VoiceProfileTests(unittest.TestCase):
         startup = build_startup_reply_instructions(settings)
 
         self.assertEqual(settings.agent_language, "zh-CN")
-        self.assertIn("刚搬来的室友", instructions)
-        self.assertIn("不是助手，不是工具", instructions)
+        self.assertIn("不是宠物，不装可爱，不演室友", instructions)
+        self.assertIn("只用简体中文", instructions)
         self.assertIn("灯灯醒了", startup)
 
     def test_english_profile_can_be_enabled_by_env(self) -> None:
@@ -37,8 +37,8 @@ class VoiceProfileTests(unittest.TestCase):
         instructions = build_agent_instructions(settings)
         startup = build_startup_reply_instructions(settings)
 
-        self.assertIn("desk lamp with attitude", instructions)
-        self.assertIn("Not an assistant, not a tool", instructions)
+        self.assertIn("physical desk lamp", instructions)
+        self.assertIn("Not a pet, not a roommate", instructions)
         self.assertIn("Tadaaaa, I'm awake.", startup)
 
     def test_chinese_profile_guides_multi_action_demo_requests(self) -> None:
@@ -48,19 +48,8 @@ class VoiceProfileTests(unittest.TestCase):
         instructions = build_agent_instructions(settings)
 
         self.assertIn("演示", instructions)
-        self.assertIn("继续", instructions)
-        self.assertIn("连续", instructions)
-
-    def test_chinese_profile_defaults_to_probabilistic_expression_engine(self) -> None:
-        with patch.dict(os.environ, {}, clear=True):
-            settings = load_runtime_settings()
-
-        instructions = build_agent_instructions(settings)
-
-        self.assertIn("每次回复前", instructions)
-        self.assertIn("15% 只说话", instructions)
-        self.assertIn("35% 说话 + 灯光", instructions)
-        self.assertIn("情绪越明显", instructions)
+        self.assertIn("新动作", instructions)
+        self.assertIn("连续动作", instructions)
 
     def test_chinese_profile_executes_safe_expression_without_confirmation(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
@@ -70,6 +59,7 @@ class VoiceProfileTests(unittest.TestCase):
 
         self.assertIn("直接执行", instructions)
         self.assertIn("不要先问用户要不要", instructions)
+        self.assertIn("不要再反问要做什么", instructions)
 
     def test_chinese_profile_keeps_actions_and_lights_off_mic(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
@@ -80,7 +70,7 @@ class VoiceProfileTests(unittest.TestCase):
         self.assertIn("不要口头播报", instructions)
         self.assertIn("不要复述自己刚刚执行了哪个动作", instructions)
         self.assertIn("不要说“我给你亮个节奏灯”", instructions)
-        self.assertIn("默认把外显留给系统", instructions)
+        self.assertIn("如果这一轮核心是动作展示，默认可以少说话", instructions)
 
     def test_chinese_profile_has_dedicated_tool_policy_section(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
@@ -118,6 +108,7 @@ class VoiceProfileTests(unittest.TestCase):
         self.assertIn("不要自称“灯灯”", instructions)
         self.assertIn("不要说“像不像在说", instructions)
         self.assertIn("不要说“我就在这儿陪着你”", instructions)
+        self.assertIn("不要把自己说成“小家伙”“室友”", instructions)
 
     def test_chinese_profile_forces_terse_clarification_and_care_lines(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
@@ -128,6 +119,15 @@ class VoiceProfileTests(unittest.TestCase):
         self.assertIn("没听清时优先只说“嗯？你说啥？”", instructions)
         self.assertIn("提醒休息时最多一句到两句", instructions)
         self.assertIn("不要连续追问“是不是", instructions)
+
+    def test_chinese_profile_bans_english_output_and_emotion_preface(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            settings = load_runtime_settings()
+
+        instructions = build_agent_instructions(settings)
+
+        self.assertIn("不要输出英文单词", instructions)
+        self.assertIn("不要先交代情绪", instructions)
 
     def test_memory_header_is_prepended_before_voice_profile(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
@@ -143,7 +143,7 @@ class VoiceProfileTests(unittest.TestCase):
         self.assertTrue(
             instructions.startswith('<memory user_id="default">remember this</memory>\n\n')
         )
-        self.assertIn("刚搬来的室友", instructions)
+        self.assertIn("桌面机械灯", instructions)
 
     def test_manager_snapshot_is_prepended_before_memory_header_and_voice_profile(self) -> None:
         with patch.dict(os.environ, {}, clear=True):

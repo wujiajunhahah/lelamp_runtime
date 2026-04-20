@@ -62,6 +62,21 @@ _NOVEL_SEQUENCE_PRESETS: tuple[tuple[str, ...], ...] = (
     ("shy", "nod", "sad"),
     ("wake_up", "curious", "headshake"),
 )
+_SHOWCASE_PALETTES: dict[str, tuple[tuple[list[int], ...], ...]] = {
+    "playful": (
+        ([255, 160, 80], [255, 225, 120], [120, 255, 190]),
+        ([255, 120, 70], [255, 210, 110], [90, 170, 255]),
+    ),
+    "sequence": (
+        ([120, 180, 255], [255, 255, 255], [255, 190, 120]),
+        ([100, 220, 255], [210, 240, 255], [255, 170, 110]),
+    ),
+    "novel": (
+        ([255, 110, 80], [255, 250, 240], [140, 220, 255]),
+        ([255, 210, 90], [255, 130, 120], [120, 255, 210]),
+        ([190, 150, 255], [255, 245, 220], [120, 220, 255]),
+    ),
+}
 
 
 class GLMManager:
@@ -117,6 +132,31 @@ class GLMManager:
 
 def _action_program_for_text(text: str) -> dict[str, Any] | None:
     lowered = text.lower()
+    if _contains_any(
+        lowered,
+        text,
+        "头部",
+        "只动头",
+        "只要头",
+        "head only",
+    ) and (
+        _contains_any(
+            lowered,
+            text,
+            "看一下",
+            "来看一下",
+            "看我",
+            "look",
+            "看过来",
+        )
+        or _matches_any(
+            text,
+            r"头.?部.*看一下",
+            r"只要头.*看一下",
+        )
+    ):
+        return _build_head_only_action_program(text)
+
     if _contains_any(lowered, text, "抬头", "仰头", "look up", "往上看", "向上看") or _matches_any(
         text,
         r"抬.?头",
@@ -174,7 +214,330 @@ def _action_program_for_text(text: str) -> dict[str, Any] | None:
                 },
             },
         }
+
+    explicit_recordings = _extract_exact_recording_mentions(text)
+    if explicit_recordings and _matches_any(
+        text,
+        r"来.*(动作|一遍|一组)",
+        r"(动作|录制|pose).*(来|做|放)",
+    ):
+        return None
+
+    if _contains_any(
+        lowered,
+        text,
+        "完全没有做过",
+        "没做过",
+        "没玩过",
+        "没见过",
+        "新的动作",
+        "新动作",
+        "给我个新动作",
+        "新一点",
+        "换一组",
+        "换个组合",
+        "别老那几个",
+        "不一样",
+        "动作看看",
+    ):
+        return _build_showcase_action_program(
+            text=text,
+            intent="novel_showcase",
+            summary="User requested a novel motion showcase.",
+            priors=["novel motion_v2 phrasing", "fresh lighting cadence"],
+            flavor="novel",
+            attention="forward",
+            attitude="playful",
+            emotion="mischievous",
+            phase_count=4,
+            novelty_range=(0.84, 0.96),
+        )
+
+    if _contains_any(
+        lowered,
+        text,
+        "连续",
+        "多个动作",
+        "几个动作",
+        "一组动作",
+        "组合动作",
+        "串起来",
+        "别只来一个",
+        "多来几个",
+        "灯光也变",
+        "灯光也切换",
+    ):
+        return _build_showcase_action_program(
+            text=text,
+            intent="sequence_showcase",
+            summary="User requested a multi-step motion showcase.",
+            priors=["multi-phase motion_v2 sequence", "coordinated gradient lighting"],
+            flavor="sequence",
+            attention="forward",
+            attitude="confident",
+            emotion="bright",
+            phase_count=4,
+            novelty_range=(0.72, 0.84),
+        )
+
+    if _contains_any(
+        lowered,
+        text,
+        "跳舞",
+        "舞蹈",
+        "跳个舞",
+        "舞给我看",
+        "dance",
+        "摇摆",
+        "摇一摇",
+        "来个动作",
+        "玩个动作",
+        "随便来一个",
+        "狂野的动作",
+        "动作看看",
+        "直接执行",
+        "直接做",
+        "用动作来表示",
+        "动作来表示",
+        "酷一点",
+    ) or _matches_any(
+        text,
+        r"来.?个动作",
+        r"玩.?个动作",
+        r"随便来.?个",
+    ):
+        return _build_showcase_action_program(
+            text=text,
+            intent="playful_showcase",
+            summary="User requested a playful motion showcase.",
+            priors=["playful motion_v2 phrasing", "warm energetic lighting"],
+            flavor="playful",
+            attention="forward",
+            attitude="confident",
+            emotion="warm",
+            phase_count=3,
+            novelty_range=(0.62, 0.78),
+        )
+
     return None
+
+
+def _build_head_only_action_program(text: str) -> dict[str, Any]:
+    fingerprint = _text_fingerprint(text)
+    side = _side_sign(fingerprint)
+    pitch = _vary(fingerprint, salt=21, low=0.08, high=0.18)
+    yaw = _vary(fingerprint, salt=22, low=0.14, high=0.24)
+    novelty = _vary(fingerprint, salt=23, low=0.66, high=0.8)
+    return {
+        "intent": "head_only_glance",
+        "priors": ["head-only motion_v2 phrasing", "compact lighting cue"],
+        "summary": "User requested a head-only glance.",
+        "program": {
+            "version": "v2",
+            "intent": "head_only_glance",
+            "why": text,
+            "expression": {
+                "attention": "forward",
+                "attitude": "precise",
+                "emotion": "cool",
+                "novelty": round(novelty, 3),
+            },
+            "style": {
+                "exaggeration": 0.34,
+                "smoothness": 0.62,
+                "tension": 0.28,
+                "tempo": 1.08,
+                "symmetry_break": 0.12,
+            },
+            "settle_policy": {
+                "return_to_home_bias": 0.74,
+                "preserve_attention_heading": False,
+            },
+            "phases": [
+                {
+                    "name": "prepare",
+                    "duration_ms": 110,
+                    "easing": "ease_out",
+                    "joints": {
+                        "base_pitch": {"target": round(-pitch * 0.4, 3), "role": "lead"},
+                    },
+                },
+                {
+                    "name": "peek",
+                    "duration_ms": 180,
+                    "easing": "ease_in_out",
+                    "joints": {
+                        "base_pitch": {"target": round(pitch, 3), "role": "lead"},
+                        "base_yaw": {"target": round(side * yaw, 3), "role": "support"},
+                    },
+                },
+                {
+                    "name": "settle",
+                    "duration_ms": 140,
+                    "easing": "ease_out",
+                    "joints": {
+                        "base_yaw": {"target": round(side * yaw * 0.35, 3), "role": "lead"},
+                    },
+                },
+            ],
+            "lighting": {
+                "mode": "gradient",
+                "palette": [[150, 210, 255], [255, 255, 255]],
+            },
+        },
+    }
+
+
+def _build_showcase_action_program(
+    *,
+    text: str,
+    intent: str,
+    summary: str,
+    priors: list[str],
+    flavor: str,
+    attention: str,
+    attitude: str,
+    emotion: str,
+    phase_count: int,
+    novelty_range: tuple[float, float],
+) -> dict[str, Any]:
+    return {
+        "intent": intent,
+        "priors": priors,
+        "summary": summary,
+        "program": _build_showcase_program(
+            text=text,
+            intent=intent,
+            flavor=flavor,
+            attention=attention,
+            attitude=attitude,
+            emotion=emotion,
+            phase_count=phase_count,
+            novelty_range=novelty_range,
+        ),
+    }
+
+
+def _build_showcase_program(
+    *,
+    text: str,
+    intent: str,
+    flavor: str,
+    attention: str,
+    attitude: str,
+    emotion: str,
+    phase_count: int,
+    novelty_range: tuple[float, float],
+) -> dict[str, Any]:
+    fingerprint = _text_fingerprint(text)
+    side = _side_sign(fingerprint)
+    exaggeration = _vary(fingerprint, salt=1, low=0.58, high=0.76)
+    smoothness = _vary(fingerprint, salt=2, low=0.34, high=0.64)
+    tension = _vary(fingerprint, salt=3, low=0.42, high=0.72)
+    tempo = _vary(fingerprint, salt=4, low=0.92, high=1.14)
+    symmetry_break = _vary(fingerprint, salt=5, low=0.18, high=0.46)
+    novelty = _vary(fingerprint, salt=6, low=novelty_range[0], high=novelty_range[1])
+    lift = _vary(fingerprint, salt=7, low=0.34, high=0.66)
+    yaw = _vary(fingerprint, salt=8, low=0.16, high=0.34)
+    elbow = _vary(fingerprint, salt=9, low=0.08, high=0.22)
+    wrist_pitch = _vary(fingerprint, salt=10, low=0.10, high=0.24)
+    roll = _vary(fingerprint, salt=11, low=0.05, high=0.12)
+    palette = _palette_for_text(flavor=flavor, fingerprint=fingerprint)
+    phases = [
+        {
+            "name": "windup",
+            "duration_ms": int(_vary(fingerprint, salt=12, low=120, high=180)),
+            "easing": "ease_out",
+            "joints": {
+                "base_yaw": {"target": round(-side * yaw * 0.55, 3), "role": "lead"},
+                "elbow_pitch": {"target": round(elbow * 0.45, 3), "role": "support"},
+                "wrist_roll": {"target": round(side * roll * 0.8, 3), "role": "accent"},
+            },
+        },
+        {
+            "name": "lift",
+            "duration_ms": int(_vary(fingerprint, salt=13, low=180, high=260)),
+            "easing": "ease_in_out",
+            "joints": {
+                "base_pitch": {"target": round(lift, 3), "role": "lead"},
+                "wrist_pitch": {"target": round(wrist_pitch, 3), "role": "support"},
+                "wrist_roll": {"target": round(side * roll, 3), "role": "accent"},
+            },
+        },
+        {
+            "name": "switch",
+            "duration_ms": int(_vary(fingerprint, salt=14, low=150, high=230)),
+            "easing": "ease_in_out",
+            "joints": {
+                "base_yaw": {"target": round(side * yaw, 3), "role": "lead"},
+                "elbow_pitch": {"target": round(elbow, 3), "role": "support"},
+                "wrist_roll": {"target": round(-side * roll, 3), "role": "accent"},
+            },
+        },
+    ]
+    if phase_count >= 4:
+        phases.append(
+            {
+                "name": "accent",
+                "duration_ms": int(_vary(fingerprint, salt=15, low=180, high=280)),
+                "easing": "ease_out",
+                "joints": {
+                    "base_pitch": {"target": round(lift * 0.88, 3), "role": "lead"},
+                    "base_yaw": {"target": round(side * yaw * 0.4, 3), "role": "support"},
+                    "wrist_pitch": {
+                        "target": round(wrist_pitch * 0.7, 3),
+                        "role": "accent",
+                    },
+                },
+            }
+        )
+
+    return {
+        "version": "v2",
+        "intent": intent,
+        "why": text,
+        "expression": {
+            "attention": attention,
+            "attitude": attitude,
+            "emotion": emotion,
+            "novelty": round(novelty, 3),
+        },
+        "style": {
+            "exaggeration": round(exaggeration, 3),
+            "smoothness": round(smoothness, 3),
+            "tension": round(tension, 3),
+            "tempo": round(tempo, 3),
+            "symmetry_break": round(symmetry_break, 3),
+        },
+        "settle_policy": {
+            "return_to_home_bias": round(_vary(fingerprint, salt=16, low=0.42, high=0.68), 3),
+            "preserve_attention_heading": phase_count <= 3,
+        },
+        "phases": phases,
+        "lighting": {"mode": "gradient", "palette": palette},
+    }
+
+
+def _palette_for_text(*, flavor: str, fingerprint: int) -> list[list[int]]:
+    palettes = _SHOWCASE_PALETTES.get(flavor) or _SHOWCASE_PALETTES["playful"]
+    palette = palettes[fingerprint % len(palettes)]
+    return [list(color) for color in palette]
+
+
+def _text_fingerprint(text: str) -> int:
+    total = 0
+    for index, char in enumerate(text, start=1):
+        total += index * ord(char)
+    return total or 1
+
+
+def _vary(fingerprint: int, *, salt: int, low: float, high: float) -> float:
+    bucket = ((fingerprint * (salt * 37 + 11)) % 1000) / 999.0
+    return low + (high - low) * bucket
+
+
+def _side_sign(fingerprint: int) -> float:
+    return -1.0 if fingerprint % 2 else 1.0
 
 
 def _scene_proposal_for_text(text: str) -> dict[str, Any] | None:
@@ -191,6 +554,8 @@ def _scene_proposal_for_text(text: str) -> dict[str, Any] | None:
         text,
         "完全没有做过",
         "没做过",
+        "没玩过",
+        "没见过",
         "新的动作",
         "新一点",
         "换一组",
@@ -226,6 +591,7 @@ def _scene_proposal_for_text(text: str) -> dict[str, Any] | None:
         lowered,
         text,
         "跳舞",
+        "舞蹈",
         "跳个舞",
         "舞给我看",
         "dance",
@@ -235,6 +601,10 @@ def _scene_proposal_for_text(text: str) -> dict[str, Any] | None:
         "玩个动作",
         "随便来一个",
         "狂野的动作",
+        "直接执行",
+        "直接做",
+        "用动作来表示",
+        "动作来表示",
     ) or _matches_any(
         text,
         r"来.?个动作",

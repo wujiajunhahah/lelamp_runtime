@@ -781,10 +781,14 @@ def test_agent_memory_runtime_interrupts_reply_when_manager_action_is_ready():
         def __init__(self):
             self.callbacks = {}
             self.interrupt_calls = 0
+            self.suppress_next_response_calls = 0
 
         def on(self, event, callback=None):
             self.callbacks[event] = callback
             return callback
+
+        def suppress_next_response(self):
+            self.suppress_next_response_calls += 1
 
         def interrupt(self):
             self.interrupt_calls += 1
@@ -834,6 +838,7 @@ def test_agent_memory_runtime_interrupts_reply_when_manager_action_is_ready():
     )
 
     assert session.interrupt_calls == 1
+    assert session.suppress_next_response_calls == 1
     assert animation.calls == [("play", "curious")]
     assert rgb.calls == [("solid", (255, 170, 70))]
     assert recorded_calls == []
@@ -842,6 +847,35 @@ def test_agent_memory_runtime_interrupts_reply_when_manager_action_is_ready():
         "action.plan",
         "execution.result",
     ]
+
+
+def test_agent_memory_runtime_suppresses_nested_realtime_session_before_interrupt():
+    from lelamp.memory.runtime import AgentMemoryRuntime
+
+    class FakeNestedRealtimeSession:
+        def __init__(self):
+            self.suppress_next_response_calls = 0
+
+        def suppress_next_response(self):
+            self.suppress_next_response_calls += 1
+
+    class FakeSession:
+        def __init__(self):
+            self.interrupt_calls = 0
+            self._activity = SimpleNamespace(
+                realtime_llm_session=FakeNestedRealtimeSession()
+            )
+
+        def interrupt(self):
+            self.interrupt_calls += 1
+
+    runtime = AgentMemoryRuntime(enabled=True)
+    session = FakeSession()
+    runtime._live_session = session
+
+    assert runtime._interrupt_live_session() is True
+    assert session.interrupt_calls == 1
+    assert session._activity.realtime_llm_session.suppress_next_response_calls == 1
 
 
 def test_agent_memory_runtime_records_guardrail_reject_for_invalid_manager_scene():

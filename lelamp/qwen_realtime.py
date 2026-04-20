@@ -154,6 +154,10 @@ class QwenRealtimeSession(oai_rt.RealtimeSession):
         self._ignored_response_ids: set[str] = set()
         self._synthetic_message_item_ids: dict[str, str] = {}
         self._non_message_item_ids: set[str] = set()
+        self._suppress_next_response_creation = False
+
+    def suppress_next_response(self) -> None:
+        self._suppress_next_response_creation = True
 
     def _suppress_pending_manual_response(self) -> str | None:
         if self._realtime_model._opts.turn_detection is not None:
@@ -550,6 +554,28 @@ class QwenRealtimeSession(oai_rt.RealtimeSession):
         metadata = getattr(event.response, "metadata", None)
         if isinstance(metadata, dict):
             client_event_id = metadata.get("client_event_id")
+
+        if self._suppress_next_response_creation:
+            self._suppress_next_response_creation = False
+            self._ignored_response_ids.add(response_id)
+            fut = None
+            if client_event_id:
+                fut = self._response_created_futures.pop(client_event_id, None)
+            if fut is not None and not fut.done():
+                fut.set_exception(oai_rt.llm.RealtimeError("response suppressed by runtime"))
+            self.send_event(oai_rt.ResponseCancelEvent(type="response.cancel"))
+            get_voice_telemetry().update(
+                status="ready",
+                local_state="idle",
+                last_response_id=response_id,
+                last_result="assistant response suppressed",
+                force=True,
+            )
+            oai_rt.logger.debug(
+                "Suppressing Qwen response created by runtime request",
+                extra={"response_id": response_id, "client_event_id": client_event_id},
+            )
+            return
 
         is_linked_followup = (
             client_event_id is None

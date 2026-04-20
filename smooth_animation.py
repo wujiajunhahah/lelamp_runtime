@@ -37,12 +37,14 @@ from lelamp.service.rgb.rgb_service import RGBService
 
 STARTUP_WARM_RGB = (255, 170, 70)
 logger = logging.getLogger(__name__)
+_VISIBLE_REALTIME_TOOL_NAMES = frozenset({"set_volume"})
 
 # Agent Class
 class LeLamp(Agent):
     def __init__(self, settings: RuntimeSettings | None = None) -> None:
         self.settings = settings or load_runtime_settings()
         super().__init__(instructions=build_agent_instructions(self.settings))
+        self._restrict_realtime_tools()
         self.animation_service_error: str | None = None
         self.auto_expression_controller: AutoExpressionController | None = None
         
@@ -83,6 +85,16 @@ class LeLamp(Agent):
         if self.rgb_service is not None:
             self.rgb_service.dispatch("solid", STARTUP_WARM_RGB)
         self._set_system_volume(self.settings.startup_volume)
+
+    def _restrict_realtime_tools(self) -> None:
+        """Keep realtime tool exposure minimal so motion stays manager-driven."""
+        filtered_tools = [
+            tool
+            for tool in self.tools
+            if getattr(tool, "__name__", "") in _VISIBLE_REALTIME_TOOL_NAMES
+        ]
+        self._tools = filtered_tools
+        self._chat_ctx = self._chat_ctx.copy(tools=self._tools)
 
     def _set_system_volume(self, volume_percent: int):
         """Internal helper to set system volume"""
@@ -236,14 +248,12 @@ class LeLamp(Agent):
     @function_tool
     async def set_volume(self, volume_percent: int) -> str:
         """
-        Control system audio volume for better interaction experience! Use this when users ask 
-        you to be louder, quieter, or set a specific volume level. Perfect for adjusting to 
-        room conditions, user preferences, or creating dramatic audio effects during conversations.
-        Use when someone says "turn it up", "lower the volume", "I can't hear you", or gives 
-        specific volume requests. Great for being considerate of your environment!
-        
+        调整扬声器音量。
+        只在用户明确要求更大声、更小声、静音或设置具体百分比时调用。
+        不要解释内部音频控制流程，直接执行即可。
+
         Args:
-            volume_percent: Volume level as percentage (0-100). 0=mute, 50=half volume, 100=max
+            volume_percent: 音量百分比，0-100。0 是静音，50 是一半，100 是最大。
         """
         print(f"LeLamp: set_volume function called with volume: {volume_percent}%")
         try:

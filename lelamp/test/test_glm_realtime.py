@@ -628,7 +628,7 @@ class GLMRealtimeTests(unittest.TestCase):
 
         asyncio.run(_exercise_reply_text())
 
-    def test_glm_tools_update_event_sanitizes_schema_for_glm(self) -> None:
+    def test_glm_tools_update_event_only_exposes_volume_control(self) -> None:
         import main
         import smooth_animation
 
@@ -674,19 +674,10 @@ class GLMRealtimeTests(unittest.TestCase):
 
         dumped = asyncio.run(_build_event())
         tools = dumped["session"]["tools"]
-
-        get_available_recordings_tool = next(
-            tool for tool in tools if tool["name"] == "get_available_recordings"
-        )
-        placeholder_schema = get_available_recordings_tool["parameters"]["properties"]["placeholder"]
-        self.assertEqual(placeholder_schema["type"], "string")
-        self.assertIn("description", placeholder_schema)
-        self.assertEqual(get_available_recordings_tool["parameters"]["required"], ["placeholder"])
-
-        paint_rgb_pattern_tool = next(tool for tool in tools if tool["name"] == "paint_rgb_pattern")
-        colors_schema = paint_rgb_pattern_tool["parameters"]["properties"]["colors"]
-        self.assertEqual(colors_schema["items"]["type"], "array")
-        self.assertEqual(colors_schema["items"]["items"]["type"], "integer")
+        self.assertEqual([tool["name"] for tool in tools], ["set_volume"])
+        volume_schema = tools[0]["parameters"]["properties"]["volume_percent"]
+        self.assertEqual(volume_schema["type"], "integer")
+        self.assertEqual(tools[0]["parameters"]["required"], ["volume_percent"])
 
 
 if __name__ == "__main__":

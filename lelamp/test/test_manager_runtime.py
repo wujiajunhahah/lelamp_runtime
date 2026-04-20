@@ -51,7 +51,7 @@ def test_glm_manager_uses_latest_user_turn_text():
     assert snapshot["scene_priors"] == {}
 
 
-def test_glm_manager_builds_scene_proposal_for_dance_request():
+def test_glm_manager_builds_action_program_for_dance_request():
     manager = GLMManager(settings=SimpleNamespace())
 
     snapshot = manager.process(
@@ -65,14 +65,13 @@ def test_glm_manager_builds_scene_proposal_for_dance_request():
         previous_snapshot=None,
     )
 
-    assert snapshot["_scene_proposal"]["summary"] == "User requested a playful dance response."
-    assert snapshot["_scene_proposal"]["scene"]["body"][0] == {
-        "type": "gesture",
-        "name": "happy",
-        "intensity": 0.8,
-        "repeats": 2,
-    }
-    assert snapshot["scene_priors"]["playful"] == ["sparkle palette", "happy wiggle"]
+    assert snapshot["_action_program"]["summary"] == "User requested a playful motion showcase."
+    assert snapshot["_action_program"]["program"]["intent"] == "playful_showcase"
+    assert len(snapshot["_action_program"]["program"]["phases"]) >= 3
+    assert snapshot["scene_priors"]["playful_showcase"] == [
+        "playful motion_v2 phrasing",
+        "warm energetic lighting",
+    ]
 
 
 def test_glm_manager_builds_action_program_for_upward_look_request():
@@ -119,7 +118,7 @@ def test_glm_manager_recognizes_colloquial_upward_look_request():
     assert snapshot["_action_program"]["program"]["intent"] == "proud_look_up"
 
 
-def test_glm_manager_builds_scene_proposal_for_generic_motion_demo_request():
+def test_glm_manager_builds_action_program_for_generic_motion_demo_request():
     manager = GLMManager(settings=SimpleNamespace())
 
     snapshot = manager.process(
@@ -133,8 +132,9 @@ def test_glm_manager_builds_scene_proposal_for_generic_motion_demo_request():
         previous_snapshot=None,
     )
 
-    assert snapshot["_scene_proposal"]["summary"] == "User requested a playful dance response."
-    assert snapshot["_scene_proposal"]["scene"]["body"][0]["type"] == "gesture"
+    assert snapshot["_action_program"]["summary"] == "User requested a playful motion showcase."
+    assert snapshot["_action_program"]["program"]["intent"] == "playful_showcase"
+    assert len(snapshot["_action_program"]["program"]["phases"]) >= 3
 
 
 def test_glm_manager_builds_multi_motion_scene_for_combo_request():
@@ -174,10 +174,10 @@ def test_glm_manager_escalates_generic_motion_demo_into_multi_step_sequence():
         previous_snapshot=None,
     )
 
-    scene = snapshot["_scene_proposal"]["scene"]
-    assert len(scene["body"]) >= 3
-    assert all(node["type"] == "pose" for node in scene["body"])
-    assert len(scene["light"]) >= 2
+    program = snapshot["_action_program"]["program"]
+    assert program["intent"] == "sequence_showcase"
+    assert len(program["phases"]) >= 4
+    assert program["lighting"]["mode"] == "gradient"
 
 
 def test_glm_manager_picks_non_default_sequence_for_novel_motion_request():
@@ -194,13 +194,95 @@ def test_glm_manager_picks_non_default_sequence_for_novel_motion_request():
         previous_snapshot=None,
     )
 
-    scene = snapshot["_scene_proposal"]["scene"]
-    assert scene["body"] != [
-        {"type": "pose", "name": "happy_wiggle"},
-        {"type": "pose", "name": "excited"},
-        {"type": "pose", "name": "scanning"},
-    ]
-    assert len(scene["body"]) >= 3
+    program = snapshot["_action_program"]["program"]
+    assert program["intent"] == "novel_showcase"
+    assert len(program["phases"]) >= 4
+    assert program["expression"]["novelty"] > 0.8
+
+
+def test_glm_manager_recognizes_colloquial_novel_motion_request():
+    manager = GLMManager(settings=SimpleNamespace())
+
+    snapshot = manager.process(
+        items=[
+            {
+                "kind": "conversation.user_turn",
+                "item_id": "itm_user_1",
+                "payload": {"text": "今天来一个之前没玩过的动作。"},
+            }
+        ],
+        previous_snapshot=None,
+    )
+
+    assert snapshot["_action_program"]["summary"] == "User requested a novel motion showcase."
+    assert snapshot["_action_program"]["program"]["intent"] == "novel_showcase"
+
+
+def test_glm_manager_recognizes_new_motion_showcase_phrase():
+    manager = GLMManager(settings=SimpleNamespace())
+
+    snapshot = manager.process(
+        items=[
+            {
+                "kind": "conversation.user_turn",
+                "item_id": "itm_user_1",
+                "payload": {"text": "来，给我个新动作看看。"},
+            }
+        ],
+        previous_snapshot=None,
+    )
+
+    assert snapshot["_action_program"]["program"]["intent"] == "novel_showcase"
+
+
+def test_glm_manager_builds_distinct_motion_programs_for_different_novel_requests():
+    manager = GLMManager(settings=SimpleNamespace())
+
+    first = manager.process(
+        items=[
+            {
+                "kind": "conversation.user_turn",
+                "item_id": "itm_user_1",
+                "payload": {"text": "来个没做过的动作看看。"},
+            }
+        ],
+        previous_snapshot=None,
+    )
+    second = manager.process(
+        items=[
+            {
+                "kind": "conversation.user_turn",
+                "item_id": "itm_user_2",
+                "payload": {"text": "今天来一个之前没玩过的动作。"},
+            }
+        ],
+        previous_snapshot=None,
+    )
+
+    first_program = first["_action_program"]["program"]
+    second_program = second["_action_program"]["program"]
+    assert first_program["phases"] != second_program["phases"]
+
+
+def test_glm_manager_builds_head_only_action_program() -> None:
+    manager = GLMManager(settings=SimpleNamespace())
+
+    snapshot = manager.process(
+        items=[
+            {
+                "kind": "conversation.user_turn",
+                "item_id": "itm_user_1",
+                "payload": {"text": "嗯，你只要头部来看一下，其他位置不要动。"},
+            }
+        ],
+        previous_snapshot=None,
+    )
+
+    program = snapshot["_action_program"]["program"]
+    assert program["intent"] == "head_only_glance"
+    assert len(program["phases"]) == 3
+    for phase in program["phases"]:
+        assert set(phase["joints"]).issubset({"base_pitch", "base_yaw"})
 
 
 def test_manager_runtime_emits_scene_and_action_items_for_manager_proposal(tmp_path):
