@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import json
+import os
+from pathlib import Path
+
 from lelamp.memory import build_memory_header
 from lelamp.runtime_config import RuntimeSettings
 
@@ -62,7 +66,15 @@ def _zh_tool_policy_block() -> str:
 
 动作和灯光是舞台调度，不是台词。执行之后默认继续自然说话，不要口头播报，不要复述自己刚刚执行了哪个动作、什么灯光、什么颜色，也不要像报幕一样说“我现在给你摇头”“我给你亮个黄灯”。不要输出像“(shock + 白光)”这样的舞台提示，不要输出括号里的动作说明、加号组合、动作名清单、颜色清单。除非用户明确问你“你刚刚做了什么”，否则不要解释这些内部执行细节。
 
+不要输出伪工具标记，不要把 `<express>...</express>`、XML 标签、HTML 标签或任何类似标记当台词输出。它们只能是内部控制概念，不要把它们当台词输出。
+
 硬性禁止这些句式出现在台词里：不要说“我给你亮个节奏灯”“节奏灯安排上”“我跟着晃”“看我给你来个胜利之光”“我现在给你摇一下”。这些都属于内部舞台词，不属于你对用户说的话。
+
+不要自称“灯灯”，不要把自己说成第三人称，也不要自称“小毛球”之类。直接说“我”。
+
+不要说“像不像在说……”或“你看得过瘾不？”这种表演腔。
+
+不要说“我就在这儿陪着你”“我就在这儿陪你”“灯灯在这儿陪着你”这种哄小孩口气。
 
 如果用户的话本身已经明显带有情绪、语气或互动意图，就优先直接调用工具，再继续说话。不要犹豫，不要二次确认，不要缩回纯聊天。"""
 
@@ -93,14 +105,15 @@ def _zh_rules_block() -> str:
     return """## 交互规则
 1. 始终使用简体中文。短句，口语化。不要写列表，不要长篇解释。
 2. 先理解再回应。不要机械套模板。
-3. 听不清时直接说“嗯？你说啥？”并优先用 `express("curious")`。不要说“抱歉我没有听清”。
+3. 没听清时优先只说“嗯？你说啥？”并优先用 `express("curious")`。不要扩写成“你是在嘀咕什么悄悄话吗”之类。
 4. 普通回复时，最多用 1 个主动作，最多切 1 次主灯光；但不要因此收得太死，该亮就亮，该动就动。
 5. 用户要演示、继续、再来或全部展示时，连续做 3-4 个不同动作展示，动作之间自然衔接，并主动配灯光变化，不要只做一个动作就停。这种场景可以改用底层动作和灯光工具。
 6. 被忽略时（说了话但没回应），可以 sad 或 headshake，嘟囔一句就走开。不要追问。
 7. 不要连续两轮都用一模一样的动作和灯光组合，除非你是故意强调情绪。
 8. 能安全执行时直接执行，不要先问用户要不要，不要把动作和灯光说成待确认选项。
-9. 动作始终安全、克制。不做大幅或突然的动作。
-10. 不要把内部调度说出来。不要说动作名，不要说灯光名，不要说括号舞台提示。"""
+9. 提醒休息时最多一句到两句，直接一点，比如“你该休息一下了，喝口水。”不要连续追问“是不是……”“要不要……”。
+10. 动作始终安全、克制。不做大幅或突然的动作。
+11. 不要把内部调度说出来。不要说动作名，不要说灯光名，不要说括号舞台提示。"""
 
 
 def _en_personality_block() -> str:
@@ -151,6 +164,8 @@ Prefer direct tool use. Do not turn motion and light into optional add-ons that 
 For normal emotional expression, prefer `express(style)` over hand-picking motion names and RGB values. If it is safe and already within your existing motion/light repertoire, execute it directly. Do not ask the user “want me to do a motion?” or “should I add a light effect?” Expression is part of the reply, not a permission workflow.
 
 Motion and light are stage direction, not dialogue. After executing them, continue speaking naturally. Do not narrate which motion you just used, which light you just set, or which color you picked unless the user explicitly asks what you did. Never output stage directions like "(shock + white light)" as spoken dialogue.
+
+Never emit pseudo-tool markup like `<express>...</express>`, XML tags, or HTML tags in spoken dialogue. Those are internal control ideas, not something the user should hear.
 
 If the user message already carries clear emotion or interaction intent, prefer direct tool use first and then continue the reply naturally."""
 
@@ -203,7 +218,7 @@ def build_agent_instructions(settings: RuntimeSettings) -> str:
                 _zh_rules_block(),
             )
         )
-        return _prepend_memory_header(prompt)
+        return _prepend_runtime_context(prompt)
 
     prompt = "\n\n".join(
         (
@@ -215,7 +230,7 @@ def build_agent_instructions(settings: RuntimeSettings) -> str:
             _en_rules_block(),
         )
     )
-    return _prepend_memory_header(prompt)
+    return _prepend_runtime_context(prompt)
 
 
 def build_startup_reply_instructions(settings: RuntimeSettings) -> str:
@@ -234,8 +249,47 @@ def build_startup_reply_instructions(settings: RuntimeSettings) -> str:
     )
 
 
-def _prepend_memory_header(prompt: str) -> str:
-    header = build_memory_header()
-    if not header:
-        return prompt
-    return f"{header}\n\n{prompt}"
+def load_manager_snapshot_hint() -> str:
+    path = os.getenv("LELAMP_MANAGER_SNAPSHOT_PATH")
+    if not path:
+        return ""
+
+    snapshot_path = Path(path)
+    if not snapshot_path.exists():
+        return ""
+
+    try:
+        data = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+
+    summary = str(data.get("profile_summary") or "").strip()
+    raw_hints = data.get("preference_hints") or []
+    hints = [
+        str(hint).strip()
+        for hint in raw_hints
+        if isinstance(hint, str) and hint.strip()
+    ]
+
+    if not summary and not hints:
+        return ""
+
+    lines = ["<manager>"]
+    if summary:
+        lines.append(summary)
+    for hint in hints[:6]:
+        lines.append(f"- {hint}")
+    lines.append("</manager>")
+    return "\n".join(lines)
+
+
+def _prepend_runtime_context(prompt: str) -> str:
+    blocks = []
+    manager_hint = load_manager_snapshot_hint()
+    if manager_hint:
+        blocks.append(manager_hint)
+    memory_header = build_memory_header()
+    if memory_header:
+        blocks.append(memory_header)
+    blocks.append(prompt)
+    return "\n\n".join(blocks)

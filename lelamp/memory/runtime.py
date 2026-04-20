@@ -11,10 +11,32 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Callable, Optional
+
+from lelamp.action_dsl.compiler import compile_scene
+from lelamp.action_dsl.executor import execute_compiled_scene
+from lelamp.expression_engine import build_expression_plan
+from lelamp.items.projections import (
+    project_action_compile_result,
+    project_body_state_snapshot,
+    project_conversation_reply,
+    project_conversation_user_turn,
+    project_execution_guardrail_reject,
+    project_execution_result,
+    project_tool_invoke,
+    project_tool_result,
+)
+from lelamp.items.store import ItemStore
+from lelamp.motion_v2 import build_body_state_snapshot, load_default_robot_profile
+from lelamp.motion_v2.compiler import compile_action_program
+from lelamp.motion_v2.critic import critique_program
+from lelamp.motion_v2.executor import execute_compiled_program
 
 from . import ids as _ids
+from .root import ensure_user_memory_root
 from .selfcheck import run_selfcheck
 from .session import SessionHandle, attach_or_create_session, start_agent_session
 from .writer import MemoryWriter
@@ -22,7 +44,26 @@ from .writer import MemoryWriter
 _logger = logging.getLogger(__name__)
 
 _DISABLE_ENV = "LELAMP_MEMORY_DISABLE"
+_MANAGER_SNAPSHOT_ENV = "LELAMP_MANAGER_SNAPSHOT_PATH"
 _TRUE_VALUES = {"1", "true", "yes", "on"}
+_INLINE_EXPRESS_TAG_RE = re.compile(
+    r"<express>\s*([^<]+?)\s*</express>",
+    re.IGNORECASE,
+)
+_INLINE_EXPRESSION_STYLES = {
+    "caring",
+    "worried",
+    "sad",
+    "happy",
+    "curious",
+    "shocked",
+    "calm",
+    "greeting",
+    "celebrate",
+}
+
+if TYPE_CHECKING:
+    from lelamp.manager.runtime import ManagerRuntime
 
 
 def _runtime_disabled() -> bool:
@@ -35,6 +76,12 @@ class AgentMemoryRuntime:
     enabled: bool = False
     writer: Optional[MemoryWriter] = None
     session_handle: Optional[SessionHandle] = None
+    item_store: Optional[ItemStore] = None
+    manager_runtime: Optional["ManagerRuntime"] = None
+    animation_service: Any = None
+    rgb_service: Any = None
+    get_animation_service_error: Optional[Callable[[], Optional[str]]] = None
+    led_count: int = 64
     _closed: bool = field(default=False, init=False, repr=False)
     _pending_user_text: Optional[str] = field(default=None, init=False, repr=False)
     _pending_user_ts_ms: Optional[int] = field(default=None, init=False, repr=False)
@@ -62,6 +109,25 @@ class AgentMemoryRuntime:
             self.session_handle.close()
         except Exception:
             _logger.exception("memory runtime: failed to close session")
+        if self.manager_runtime is not None:
+            try:
+                self.manager_runtime.flush()
+            except Exception:
+                _logger.exception("memory runtime: failed to flush manager snapshot")
+
+    def bind_action_executor(
+        self,
+        *,
+        animation_service: Any = None,
+        rgb_service: Any = None,
+        get_animation_service_error: Optional[Callable[[], Optional[str]]] = None,
+        led_count: Optional[int] = None,
+    ) -> None:
+        self.animation_service = animation_service
+        self.rgb_service = rgb_service
+        self.get_animation_service_error = get_animation_service_error
+        if isinstance(led_count, int) and led_count > 0:
+            self.led_count = led_count
 
     def install_session_listeners(
         self,
@@ -86,8 +152,16 @@ class AgentMemoryRuntime:
             transcript = str(getattr(ev, "transcript", "") or "").strip()
             if not transcript:
                 return
+            ts_ms = _event_ts_ms(ev) or _ids.current_timestamp_ms()
             self._pending_user_text = transcript
-            self._pending_user_ts_ms = _event_ts_ms(ev)
+            self._pending_user_ts_ms = ts_ms
+            self._append_item(
+                project_conversation_user_turn(
+                    session_id=self.session_handle.session_id,
+                    text=transcript,
+                    ts_ms=ts_ms,
+                )
+            )
 
         def _on_conversation_item_added(ev: Any) -> None:
             item = getattr(ev, "item", None)
@@ -99,8 +173,12 @@ class AgentMemoryRuntime:
             assistant_text = _message_text(item)
             if not assistant_text:
                 return
+            assistant_text, inline_directives = _extract_inline_tool_directives(
+                assistant_text
+            )
 
             assistant_ts_ms = _event_ts_ms(ev)
+            assistant_item_ts_ms = assistant_ts_ms or _ids.current_timestamp_ms()
             user_ts_ms = self._pending_user_ts_ms
             duration_ms = None
             if assistant_ts_ms is not None and user_ts_ms is not None:
@@ -118,19 +196,34 @@ class AgentMemoryRuntime:
                 model_name=model_name,
                 ts_ms=assistant_ts_ms,
             )
+            self._append_item(
+                project_conversation_reply(
+                    session_id=self.session_handle.session_id,
+                    text=assistant_text,
+                    ts_ms=assistant_item_ts_ms,
+                )
+            )
+            self._execute_inline_tool_directives(
+                directives=inline_directives,
+                ts_ms=assistant_item_ts_ms,
+            )
             if isinstance(record, dict):
                 event_id = record.get("event_id")
                 if isinstance(event_id, str) and event_id:
                     self._last_conversation_event_id = event_id
+            self._run_manager()
             self._pending_user_text = None
             self._pending_user_ts_ms = None
 
         def _on_function_tools_executed(ev: Any) -> None:
+            processed_any = False
             for call, output in getattr(ev, "zipped", lambda: [])():
                 invoke_id = _ids.generate_invoke_id()
                 args = _parse_tool_args(getattr(call, "arguments", ""))
                 invoke_ts_ms = _object_ts_ms(call)
+                invoke_item_ts_ms = invoke_ts_ms or _ids.current_timestamp_ms()
                 result_ts_ms = _object_ts_ms(output)
+                result_item_ts_ms = result_ts_ms or _ids.current_timestamp_ms()
                 duration_ms = None
                 if invoke_ts_ms is not None and result_ts_ms is not None:
                     duration_ms = max(0, result_ts_ms - invoke_ts_ms)
@@ -147,6 +240,16 @@ class AgentMemoryRuntime:
                     caller="llm",
                     ts_ms=invoke_ts_ms,
                 )
+                self._append_item(
+                    project_tool_invoke(
+                        session_id=self.session_handle.session_id,
+                        tool_name=str(getattr(call, "name", "") or ""),
+                        args=args,
+                        caller="llm",
+                        invoke_id=invoke_id,
+                        ts_ms=invoke_item_ts_ms,
+                    )
+                )
                 self.writer.write_function_tool(
                     session_id=self.session_handle.session_id,
                     source="voice_agent",
@@ -160,11 +263,111 @@ class AgentMemoryRuntime:
                     error=error,
                     ts_ms=result_ts_ms,
                 )
+                self._append_item(
+                    project_tool_result(
+                        session_id=self.session_handle.session_id,
+                        tool_name=str(getattr(call, "name", "") or ""),
+                        args=args,
+                        caller="llm",
+                        invoke_id=invoke_id,
+                        duration_ms=duration_ms,
+                        ok=ok,
+                        error=error,
+                        ts_ms=result_item_ts_ms,
+                    )
+                )
+                processed_any = True
+            if processed_any:
+                self._run_manager()
 
         session.on("user_input_transcribed", _guarded(_on_user_input_transcribed))
         session.on("conversation_item_added", _guarded(_on_conversation_item_added))
         session.on("function_tools_executed", _guarded(_on_function_tools_executed))
         self._listeners_installed = True
+
+    def _execute_inline_tool_directives(
+        self,
+        *,
+        directives: list[dict[str, Any]],
+        ts_ms: int,
+    ) -> None:
+        if (
+            not directives
+            or not self.enabled
+            or self._closed
+            or self.writer is None
+            or self.session_handle is None
+        ):
+            return
+
+        for directive in directives:
+            tool_name = str(directive.get("tool_name") or "").strip()
+            args = directive.get("args")
+            if not tool_name or not isinstance(args, dict):
+                continue
+
+            invoke_id = _ids.generate_invoke_id()
+            self.writer.write_function_tool(
+                session_id=self.session_handle.session_id,
+                source="voice_agent",
+                invoke_id=invoke_id,
+                phase="invoke",
+                tool_name=tool_name,
+                args=args,
+                caller="llm",
+                ts_ms=ts_ms,
+            )
+            self._append_item(
+                project_tool_invoke(
+                    session_id=self.session_handle.session_id,
+                    tool_name=tool_name,
+                    args=args,
+                    caller="llm",
+                    invoke_id=invoke_id,
+                    ts_ms=ts_ms,
+                )
+            )
+
+            ok = True
+            error = None
+            try:
+                _execute_inline_tool_directive(
+                    directive,
+                    animation_service=self.animation_service,
+                    rgb_service=self.rgb_service,
+                    animation_service_error=self._current_animation_error(),
+                    led_count=self.led_count,
+                )
+            except Exception as exc:
+                ok = False
+                error = str(exc)
+
+            self.writer.write_function_tool(
+                session_id=self.session_handle.session_id,
+                source="voice_agent",
+                invoke_id=invoke_id,
+                phase="result",
+                tool_name=tool_name,
+                args=args,
+                caller="llm",
+                duration_ms=0,
+                ok=ok,
+                error=error,
+                ts_ms=ts_ms,
+            )
+            self._append_item(
+                project_tool_result(
+                    session_id=self.session_handle.session_id,
+                    tool_name=tool_name,
+                    args=args,
+                    caller="llm",
+                    invoke_id=invoke_id,
+                    duration_ms=0,
+                    ok=ok,
+                    error=error,
+                    ts_ms=ts_ms,
+                )
+            )
 
     def note_auto_expression_fallback(
         self,
@@ -219,6 +422,269 @@ class AgentMemoryRuntime:
                 "memory runtime: failed to record auto-expression fallback",
             )
 
+    def _append_item(self, item: dict[str, Any]) -> None:
+        if self.item_store is None or self.session_handle is None:
+            return
+        try:
+            self.item_store.append(item)
+        except Exception:
+            _logger.exception("memory runtime: failed to append item")
+
+    def _run_manager(self) -> None:
+        if self.manager_runtime is None or self.item_store is None or self.session_handle is None:
+            return
+        try:
+            items = list(self.item_store.iter_session_items(self.session_handle.session_id))
+            previous_count = len(items)
+            self.manager_runtime.process_once(
+                session_id=self.session_handle.session_id,
+                items=items,
+            )
+            updated_items = list(self.item_store.iter_session_items(self.session_handle.session_id))
+            self._execute_manager_action_items(updated_items[previous_count:])
+        except Exception:
+            _logger.exception("memory runtime: manager sidecar processing failed")
+
+    def _execute_manager_action_items(self, items: list[dict[str, Any]]) -> None:
+        for item in items:
+            if item.get("kind") == "action.plan":
+                self._execute_action_plan(item)
+            if item.get("kind") == "action.program":
+                self._execute_action_program(item)
+
+    def _execute_action_plan(self, item: dict[str, Any]) -> None:
+        if self.item_store is None or self.session_handle is None:
+            return
+
+        payload = item.get("payload") or {}
+        action_item_id = str(item.get("item_id") or "")
+        scene = payload.get("scene")
+        ts_ms = _ids.current_timestamp_ms()
+        if not isinstance(scene, dict):
+            self._append_item(
+                project_execution_guardrail_reject(
+                    session_id=self.session_handle.session_id,
+                    action_item_id=action_item_id,
+                    reason="action plan is missing a valid scene",
+                    scene={},
+                    ts_ms=ts_ms,
+                )
+            )
+            return
+
+        try:
+            compiled = compile_scene(scene)
+        except Exception as exc:
+            self._append_item(
+                project_execution_guardrail_reject(
+                    session_id=self.session_handle.session_id,
+                    action_item_id=action_item_id,
+                    reason=str(exc),
+                    scene=scene,
+                    ts_ms=ts_ms,
+                )
+            )
+            return
+
+        animation_error = self._current_animation_error()
+        motion_service = self.animation_service if animation_error is None else None
+        rgb_service = self.rgb_service
+        skipped_motion = bool(compiled.get("motion")) and motion_service is None
+        skipped_light = bool(compiled.get("light")) and rgb_service is None
+
+        if skipped_motion and skipped_light:
+            reason = "no action executor targets are available"
+            if animation_error:
+                reason = f"motion unavailable: {animation_error}"
+            self._append_item(
+                project_execution_guardrail_reject(
+                    session_id=self.session_handle.session_id,
+                    action_item_id=action_item_id,
+                    reason=reason,
+                    scene=scene,
+                    ts_ms=ts_ms,
+                )
+            )
+            return
+
+        try:
+            execute_compiled_scene(
+                compiled,
+                animation_service=motion_service,
+                rgb_service=rgb_service,
+            )
+        except Exception as exc:
+            self._append_item(
+                project_execution_guardrail_reject(
+                    session_id=self.session_handle.session_id,
+                    action_item_id=action_item_id,
+                    reason=str(exc),
+                    scene=scene,
+                    ts_ms=ts_ms,
+                )
+            )
+            return
+
+        self._append_item(
+            project_execution_result(
+                session_id=self.session_handle.session_id,
+                action_item_id=action_item_id,
+                compiled=compiled,
+                motion_event_count=len(compiled.get("motion", [])),
+                light_event_count=len(compiled.get("light", [])),
+                skipped_motion=skipped_motion,
+                skipped_light=skipped_light,
+                ts_ms=ts_ms,
+            )
+        )
+
+    def _execute_action_program(self, item: dict[str, Any]) -> None:
+        if self.item_store is None or self.session_handle is None:
+            return
+
+        payload = item.get("payload") or {}
+        action_item_id = str(item.get("item_id") or "")
+        program = payload.get("program")
+        ts_ms = _ids.current_timestamp_ms()
+
+        if not isinstance(program, dict):
+            self._append_item(
+                project_execution_guardrail_reject(
+                    session_id=self.session_handle.session_id,
+                    action_item_id=action_item_id,
+                    reason="action program is missing a valid program payload",
+                    scene={},
+                    ts_ms=ts_ms,
+                )
+            )
+            return
+
+        current_pose = self._current_animation_pose()
+        if not current_pose:
+            self._append_item(
+                project_execution_guardrail_reject(
+                    session_id=self.session_handle.session_id,
+                    action_item_id=action_item_id,
+                    reason="current pose unavailable for action program execution",
+                    scene={"program": program},
+                    ts_ms=ts_ms,
+                )
+            )
+            return
+
+        pose_norm = {
+            str(joint_name).removesuffix(".pos"): float(value)
+            for joint_name, value in current_pose.items()
+        }
+        profile = load_default_robot_profile()
+        snapshot = build_body_state_snapshot(
+            pose_norm=pose_norm,
+            profile=profile,
+            recent_motion_energy=0.0,
+        )
+        self._append_item(
+            project_body_state_snapshot(
+                session_id=self.session_handle.session_id,
+                snapshot=snapshot,
+                ts_ms=_ids.current_timestamp_ms(),
+            )
+        )
+
+        critique = critique_program(
+            program=program,
+            recent_fingerprints=self._recent_program_fingerprints(
+                current_item_id=action_item_id
+            ),
+        )
+        compiled = compile_action_program(
+            program=program,
+            critique=critique,
+            snapshot=snapshot,
+            profile=profile,
+        )
+        self._append_item(
+            project_action_compile_result(
+                session_id=self.session_handle.session_id,
+                action_item_id=action_item_id,
+                result=compiled,
+                ts_ms=_ids.current_timestamp_ms(),
+            )
+        )
+
+        if compiled.get("decision") == "rejected":
+            self._append_item(
+                project_execution_guardrail_reject(
+                    session_id=self.session_handle.session_id,
+                    action_item_id=action_item_id,
+                    reason=str(compiled.get("reason") or "motion program rejected"),
+                    scene={"program": program},
+                    ts_ms=_ids.current_timestamp_ms(),
+                )
+            )
+            return
+
+        outcome = execute_compiled_program(
+            compiled=compiled,
+            animation_service=self.animation_service,
+            rgb_service=self.rgb_service,
+        )
+        self._append_item(
+            project_execution_result(
+                session_id=self.session_handle.session_id,
+                action_item_id=action_item_id,
+                compiled=compiled,
+                motion_event_count=int(outcome.get("motion_frame_count", 0)),
+                light_event_count=int(outcome.get("light_event_count", 0)),
+                skipped_motion=False,
+                skipped_light=False,
+                ts_ms=_ids.current_timestamp_ms(),
+            )
+        )
+
+    def _current_animation_error(self) -> Optional[str]:
+        if self.get_animation_service_error is None:
+            return None
+        try:
+            return self.get_animation_service_error()
+        except Exception:
+            _logger.exception("memory runtime: animation error callback failed")
+            return "animation error callback failed"
+
+    def _current_animation_pose(self) -> Optional[dict[str, float]]:
+        if self.animation_service is None:
+            return None
+        try:
+            get_current_pose = getattr(self.animation_service, "get_current_pose", None)
+            if get_current_pose is None:
+                return None
+            pose = get_current_pose()
+        except Exception:
+            _logger.exception("memory runtime: failed to read current pose")
+            return None
+        if not isinstance(pose, dict):
+            return None
+        return pose
+
+    def _recent_program_fingerprints(self, *, current_item_id: str) -> set[str]:
+        if self.item_store is None or self.session_handle is None:
+            return set()
+        fingerprints: set[str] = set()
+        try:
+            items = list(self.item_store.iter_session_items(self.session_handle.session_id))
+        except Exception:
+            _logger.exception("memory runtime: failed to read recent program history")
+            return set()
+        for item in items:
+            if item.get("kind") != "action.program":
+                continue
+            if str(item.get("item_id") or "") == current_item_id:
+                continue
+            payload = item.get("payload") or {}
+            fingerprint = payload.get("fingerprint")
+            if isinstance(fingerprint, str) and fingerprint:
+                fingerprints.add(fingerprint)
+        return fingerprints
+
 
 def _guarded(callback):
     def _wrapped(ev: Any) -> None:
@@ -271,6 +737,65 @@ def _content_part_text(part: Any) -> str:
     return ""
 
 
+def _extract_inline_tool_directives(text: str) -> tuple[str, list[dict[str, Any]]]:
+    directives: list[dict[str, Any]] = []
+
+    def _replace(match: re.Match[str]) -> str:
+        raw_value = match.group(1).strip()
+        normalized = raw_value.lower()
+        if normalized in _INLINE_EXPRESSION_STYLES:
+            directives.append(
+                {"tool_name": "express", "args": {"style": normalized}}
+            )
+        elif raw_value:
+            directives.append(
+                {"tool_name": "play_recording", "args": {"recording_name": raw_value}}
+            )
+        return ""
+
+    stripped = _INLINE_EXPRESS_TAG_RE.sub(_replace, text or "")
+    stripped = re.sub(r"\s+", " ", stripped).strip()
+    return stripped, directives
+
+
+def _execute_inline_tool_directive(
+    directive: dict[str, Any],
+    *,
+    animation_service: Any,
+    rgb_service: Any,
+    animation_service_error: Optional[str],
+    led_count: int,
+) -> None:
+    tool_name = directive.get("tool_name")
+    args = directive.get("args") or {}
+
+    if tool_name == "express":
+        style = str(args.get("style") or "").strip()
+        plan = build_expression_plan(style, led_count)
+        if plan is None:
+            raise ValueError(f"unknown inline expression style: {style}")
+        if plan.recording_name and animation_service_error is None and animation_service is not None:
+            animation_service.dispatch("play", plan.recording_name)
+        if plan.pattern_rgb and rgb_service is not None:
+            rgb_service.dispatch("paint", plan.pattern_rgb)
+        elif plan.solid_rgb and rgb_service is not None:
+            rgb_service.dispatch("solid", plan.solid_rgb)
+        return
+
+    if tool_name == "play_recording":
+        recording_name = str(args.get("recording_name") or "").strip()
+        if not recording_name:
+            raise ValueError("inline recording name is empty")
+        if animation_service_error is not None:
+            raise RuntimeError(animation_service_error)
+        if animation_service is None:
+            raise RuntimeError("animation service unavailable")
+        animation_service.dispatch("play", recording_name)
+        return
+
+    raise ValueError(f"unsupported inline directive: {tool_name}")
+
+
 def _parse_tool_args(raw: Any) -> dict[str, Any]:
     if isinstance(raw, dict):
         return raw
@@ -304,11 +829,51 @@ def bootstrap_agent_runtime(settings, *, user_id: Optional[str] = None) -> Agent
         _logger.exception("memory runtime: bootstrap failed, degrading to no-op")
         return AgentMemoryRuntime(enabled=False)
 
+    item_store = _build_item_store(settings)
+    manager_runtime = _build_manager_runtime(settings, user_id=user_id, item_store=item_store)
+
     return AgentMemoryRuntime(
         enabled=True,
         writer=writer,
         session_handle=session_handle,
+        item_store=item_store,
+        manager_runtime=manager_runtime,
     )
+
+
+def _build_item_store(settings) -> ItemStore | None:
+    path_value = getattr(settings, "item_store_path", "/tmp/lelamp-items.jsonl")
+    try:
+        return ItemStore(Path(path_value))
+    except Exception:
+        _logger.exception("memory runtime: item store bootstrap failed")
+        return None
+
+
+def _build_manager_runtime(
+    settings,
+    *,
+    user_id: Optional[str],
+    item_store: ItemStore | None,
+) -> "ManagerRuntime | None":
+    if item_store is None:
+        return None
+    try:
+        from lelamp.manager.glm_manager import GLMManager
+        from lelamp.manager.runtime import ManagerRuntime
+
+        derived_root = ensure_user_memory_root(user_id) / "derived"
+        runtime = ManagerRuntime(
+            manager=GLMManager(settings=settings),
+            item_store_path=item_store.path,
+            derived_root=derived_root,
+        )
+    except Exception:
+        _logger.exception("memory runtime: manager sidecar bootstrap failed")
+        return None
+
+    os.environ[_MANAGER_SNAPSHOT_ENV] = str(runtime.snapshot_path)
+    return runtime
 
 
 def record_standalone_playback(

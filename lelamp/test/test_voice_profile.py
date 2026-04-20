@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 import unittest
 from unittest.mock import patch
 
@@ -99,6 +100,35 @@ class VoiceProfileTests(unittest.TestCase):
         self.assertIn("不要输出像“(shock + 白光)”这样的舞台提示", instructions)
         self.assertNotIn("关心某人 → shy + 暖黄光", instructions)
 
+    def test_chinese_profile_bans_pseudo_tool_markup(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            settings = load_runtime_settings()
+
+        instructions = build_agent_instructions(settings)
+
+        self.assertIn("<express>", instructions)
+        self.assertIn("不要把它们当台词输出", instructions)
+
+    def test_chinese_profile_bans_self_narration_and_babysitting_language(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            settings = load_runtime_settings()
+
+        instructions = build_agent_instructions(settings)
+
+        self.assertIn("不要自称“灯灯”", instructions)
+        self.assertIn("不要说“像不像在说", instructions)
+        self.assertIn("不要说“我就在这儿陪着你”", instructions)
+
+    def test_chinese_profile_forces_terse_clarification_and_care_lines(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            settings = load_runtime_settings()
+
+        instructions = build_agent_instructions(settings)
+
+        self.assertIn("没听清时优先只说“嗯？你说啥？”", instructions)
+        self.assertIn("提醒休息时最多一句到两句", instructions)
+        self.assertIn("不要连续追问“是不是", instructions)
+
     def test_memory_header_is_prepended_before_voice_profile(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
             settings = load_runtime_settings()
@@ -114,6 +144,50 @@ class VoiceProfileTests(unittest.TestCase):
             instructions.startswith('<memory user_id="default">remember this</memory>\n\n')
         )
         self.assertIn("刚搬来的室友", instructions)
+
+    def test_manager_snapshot_is_prepended_before_memory_header_and_voice_profile(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            settings = load_runtime_settings()
+
+        with patch(
+            "lelamp.voice_profile.load_manager_snapshot_hint",
+            return_value="<manager>prefer warm greeting scenes</manager>",
+        ), patch(
+            "lelamp.voice_profile.build_memory_header",
+            return_value='<memory user_id="default">remember this</memory>',
+        ):
+            instructions = build_agent_instructions(settings)
+
+        self.assertTrue(
+            instructions.startswith(
+                "<manager>prefer warm greeting scenes</manager>\n\n"
+                '<memory user_id="default">remember this</memory>\n\n'
+            )
+        )
+
+    def test_load_manager_snapshot_hint_reads_summary_and_hints(self) -> None:
+        from lelamp.voice_profile import load_manager_snapshot_hint
+
+        with patch.dict(os.environ, {}, clear=True):
+            root = Path(self.id().replace(".", "_"))
+
+        with patch("lelamp.voice_profile.os.getenv", return_value="/tmp/test-manager-snapshot.json"), patch(
+            "lelamp.voice_profile.Path.read_text",
+            return_value=(
+                '{"profile_summary":"prefer warm greeting scenes",'
+                '"preference_hints":["keep replies short","avoid repeated white light"]}'
+            ),
+        ), patch("lelamp.voice_profile.Path.exists", return_value=True):
+            hint = load_manager_snapshot_hint()
+
+        self.assertEqual(
+            hint,
+            "<manager>\n"
+            "prefer warm greeting scenes\n"
+            "- keep replies short\n"
+            "- avoid repeated white light\n"
+            "</manager>",
+        )
 
 
 if __name__ == "__main__":
