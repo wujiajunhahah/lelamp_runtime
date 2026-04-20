@@ -314,7 +314,7 @@ class AgentMemoryRuntime:
                 phase="invoke",
                 tool_name=tool_name,
                 args=args,
-                caller="llm_inline_tag",
+                caller="llm",
                 ts_ms=ts_ms,
             )
             self._append_item(
@@ -322,7 +322,7 @@ class AgentMemoryRuntime:
                     session_id=self.session_handle.session_id,
                     tool_name=tool_name,
                     args=args,
-                    caller="llm_inline_tag",
+                    caller="llm",
                     invoke_id=invoke_id,
                     ts_ms=ts_ms,
                 )
@@ -349,7 +349,7 @@ class AgentMemoryRuntime:
                 phase="result",
                 tool_name=tool_name,
                 args=args,
-                caller="llm_inline_tag",
+                caller="llm",
                 duration_ms=0,
                 ok=ok,
                 error=error,
@@ -360,7 +360,7 @@ class AgentMemoryRuntime:
                     session_id=self.session_handle.session_id,
                     tool_name=tool_name,
                     args=args,
-                    caller="llm_inline_tag",
+                    caller="llm",
                     invoke_id=invoke_id,
                     duration_ms=0,
                     ok=ok,

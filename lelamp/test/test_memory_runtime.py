@@ -510,7 +510,7 @@ def test_agent_memory_runtime_executes_inline_express_tag_as_real_tool():
     function_tool_calls = [entry for entry in recorded_calls if entry[0] == "function_tool"]
     assert function_tool_calls[0][1]["tool_name"] == "express"
     assert function_tool_calls[0][1]["args"] == {"style": "happy"}
-    assert function_tool_calls[0][1]["caller"] == "llm_inline_tag"
+    assert function_tool_calls[0][1]["caller"] == "llm"
     assert function_tool_calls[1][1]["tool_name"] == "express"
     assert function_tool_calls[1][1]["ok"] is True
     assert animation.calls == [("play", "happy_wiggle")]
@@ -521,6 +521,8 @@ def test_agent_memory_runtime_executes_inline_express_tag_as_real_tool():
         "conversation.tool_invoke",
         "conversation.tool_result",
     ]
+    assert item_store.items[2]["payload"]["caller"] == "llm"
+    assert item_store.items[3]["payload"]["caller"] == "llm"
 
 
 def test_agent_memory_runtime_records_auto_expression_fallback():
