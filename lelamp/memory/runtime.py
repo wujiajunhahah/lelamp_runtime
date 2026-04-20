@@ -87,6 +87,9 @@ class AgentMemoryRuntime:
     _pending_user_ts_ms: Optional[int] = field(default=None, init=False, repr=False)
     _listeners_installed: bool = field(default=False, init=False, repr=False)
     _last_conversation_event_id: Optional[str] = field(default=None, init=False, repr=False)
+    _pending_manager_action_generated: bool = field(default=False, init=False, repr=False)
+    _suppress_next_assistant_reply: bool = field(default=False, init=False, repr=False)
+    _live_session: Any = field(default=None, init=False, repr=False)
 
     def set_motor_bus_enabled(self, enabled: Optional[bool]) -> None:
         if not self.enabled or self._closed or self.session_handle is None:
@@ -145,6 +148,7 @@ class AgentMemoryRuntime:
             or not hasattr(session, "on")
         ):
             return
+        self._live_session = session
 
         def _on_user_input_transcribed(ev: Any) -> None:
             if not getattr(ev, "is_final", False):
@@ -162,10 +166,21 @@ class AgentMemoryRuntime:
                     ts_ms=ts_ms,
                 )
             )
+            emitted_items = self._run_manager()
+            self._pending_manager_action_generated = _contains_action_items(emitted_items)
+            self._suppress_next_assistant_reply = False
+            if self._pending_manager_action_generated:
+                self._suppress_next_assistant_reply = self._interrupt_live_session()
 
         def _on_conversation_item_added(ev: Any) -> None:
             item = getattr(ev, "item", None)
             if item is None or getattr(item, "role", None) != "assistant":
+                return
+            if self._suppress_next_assistant_reply:
+                self._pending_user_text = None
+                self._pending_user_ts_ms = None
+                self._pending_manager_action_generated = False
+                self._suppress_next_assistant_reply = False
                 return
             user_text = self._pending_user_text
             if not user_text:
@@ -211,9 +226,12 @@ class AgentMemoryRuntime:
                 event_id = record.get("event_id")
                 if isinstance(event_id, str) and event_id:
                     self._last_conversation_event_id = event_id
-            self._run_manager()
+            if not self._pending_manager_action_generated:
+                self._run_manager()
             self._pending_user_text = None
             self._pending_user_ts_ms = None
+            self._pending_manager_action_generated = False
+            self._suppress_next_assistant_reply = False
 
         def _on_function_tools_executed(ev: Any) -> None:
             processed_any = False
@@ -430,9 +448,9 @@ class AgentMemoryRuntime:
         except Exception:
             _logger.exception("memory runtime: failed to append item")
 
-    def _run_manager(self) -> None:
+    def _run_manager(self) -> list[dict[str, Any]]:
         if self.manager_runtime is None or self.item_store is None or self.session_handle is None:
-            return
+            return []
         try:
             items = list(self.item_store.iter_session_items(self.session_handle.session_id))
             previous_count = len(items)
@@ -441,9 +459,23 @@ class AgentMemoryRuntime:
                 items=items,
             )
             updated_items = list(self.item_store.iter_session_items(self.session_handle.session_id))
-            self._execute_manager_action_items(updated_items[previous_count:])
+            new_items = updated_items[previous_count:]
+            self._execute_manager_action_items(new_items)
+            return new_items
         except Exception:
             _logger.exception("memory runtime: manager sidecar processing failed")
+            return []
+
+    def _interrupt_live_session(self) -> bool:
+        session = self._live_session
+        if session is None or not hasattr(session, "interrupt"):
+            return False
+        try:
+            session.interrupt()
+        except Exception:
+            _logger.exception("memory runtime: failed to interrupt assistant reply")
+            return False
+        return True
 
     def _execute_manager_action_items(self, items: list[dict[str, Any]]) -> None:
         for item in items:
@@ -756,6 +788,10 @@ def _extract_inline_tool_directives(text: str) -> tuple[str, list[dict[str, Any]
     stripped = _INLINE_EXPRESS_TAG_RE.sub(_replace, text or "")
     stripped = re.sub(r"\s+", " ", stripped).strip()
     return stripped, directives
+
+
+def _contains_action_items(items: list[dict[str, Any]]) -> bool:
+    return any(item.get("kind") in {"action.plan", "action.program"} for item in items)
 
 
 def _execute_inline_tool_directive(
