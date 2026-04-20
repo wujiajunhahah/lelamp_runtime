@@ -137,6 +137,49 @@ def test_glm_manager_builds_scene_proposal_for_generic_motion_demo_request():
     assert snapshot["_scene_proposal"]["scene"]["body"][0]["type"] == "gesture"
 
 
+def test_glm_manager_builds_multi_motion_scene_for_combo_request():
+    manager = GLMManager(settings=SimpleNamespace())
+
+    snapshot = manager.process(
+        items=[
+            {
+                "kind": "conversation.user_turn",
+                "item_id": "itm_user_1",
+                "payload": {"text": "来一组连续动作，happy_wiggle excited scanning 都来一遍，灯光也变一变"},
+            }
+        ],
+        previous_snapshot=None,
+    )
+
+    scene = snapshot["_scene_proposal"]["scene"]
+    assert scene["body"] == [
+        {"type": "pose", "name": "happy_wiggle"},
+        {"type": "pose", "name": "excited"},
+        {"type": "pose", "name": "scanning"},
+    ]
+    assert len(scene["light"]) >= 3
+
+
+def test_glm_manager_escalates_generic_motion_demo_into_multi_step_sequence():
+    manager = GLMManager(settings=SimpleNamespace())
+
+    snapshot = manager.process(
+        items=[
+            {
+                "kind": "conversation.user_turn",
+                "item_id": "itm_user_1",
+                "payload": {"text": "别只来一个，连续来几个动作，灯光也切换一下"},
+            }
+        ],
+        previous_snapshot=None,
+    )
+
+    scene = snapshot["_scene_proposal"]["scene"]
+    assert len(scene["body"]) >= 3
+    assert all(node["type"] == "pose" for node in scene["body"])
+    assert len(scene["light"]) >= 2
+
+
 def test_manager_runtime_emits_scene_and_action_items_for_manager_proposal(tmp_path):
     session_id = "sess_2026-04-19_20-00-00"
     user_turn = project_conversation_user_turn(

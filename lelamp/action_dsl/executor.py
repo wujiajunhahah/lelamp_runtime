@@ -13,12 +13,21 @@ def execute_compiled_scene(
     animation_service: Any = None,
     rgb_service: Any = None,
 ) -> dict[str, list[tuple[str, object]]]:
+    motion_events = list(compiled.get("motion", []))
+    light_events = list(compiled.get("light", []))
+
     if animation_service is not None:
-        for event_type, payload in compiled.get("motion", []):
-            animation_service.dispatch(event_type, payload)
+        if len(motion_events) > 1 and all(event_type == "play" for event_type, _ in motion_events):
+            animation_service.dispatch("sequence", [payload for _, payload in motion_events])
+        else:
+            for event_type, payload in motion_events:
+                animation_service.dispatch(event_type, payload)
     if rgb_service is not None:
-        for event_type, payload in compiled.get("light", []):
-            rgb_service.dispatch(event_type, payload)
+        if len(light_events) > 1:
+            rgb_service.dispatch("sequence", light_events)
+        else:
+            for event_type, payload in light_events:
+                rgb_service.dispatch(event_type, payload)
     return compiled
 
 

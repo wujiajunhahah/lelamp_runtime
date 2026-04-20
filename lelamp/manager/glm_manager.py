@@ -10,6 +10,49 @@ if TYPE_CHECKING:
     from lelamp.runtime_config import RuntimeSettings
 
 
+_DEMO_RECORDINGS = (
+    "happy_wiggle",
+    "excited",
+    "scanning",
+    "curious",
+    "nod",
+    "headshake",
+    "shy",
+    "shock",
+    "sad",
+    "wake_up",
+    "idle",
+)
+_RECORDING_KEYWORDS: tuple[tuple[str, str], ...] = (
+    ("狂野", "excited"),
+    ("疯狂", "excited"),
+    ("激动", "excited"),
+    ("扫描", "scanning"),
+    ("扫一圈", "scanning"),
+    ("东张西望", "scanning"),
+    ("好奇", "curious"),
+    ("点头", "nod"),
+    ("摇头", "headshake"),
+    ("害羞", "shy"),
+    ("震惊", "shock"),
+    ("惊讶", "shock"),
+    ("难过", "sad"),
+)
+_LIGHT_STEPS = {
+    "happy_wiggle": {"type": "sparkle", "palette": [[255, 180, 70], [255, 120, 40], [70, 255, 120]]},
+    "excited": {"type": "sparkle", "palette": [[255, 80, 60], [255, 220, 90], [255, 255, 255]]},
+    "scanning": {"type": "gradient", "palette": [[90, 170, 255], [220, 245, 255]]},
+    "curious": {"type": "gradient", "palette": [[220, 235, 255], [140, 180, 255]]},
+    "nod": {"type": "solid", "rgb": [255, 175, 90]},
+    "headshake": {"type": "solid", "rgb": [255, 140, 70]},
+    "shy": {"type": "solid", "rgb": [255, 200, 90]},
+    "shock": {"type": "solid", "rgb": [255, 255, 255]},
+    "sad": {"type": "solid", "rgb": [255, 90, 60]},
+    "wake_up": {"type": "gradient", "palette": [[255, 170, 70], [255, 235, 180]]},
+    "idle": {"type": "solid", "rgb": [255, 200, 135]},
+}
+
+
 class GLMManager:
     def __init__(self, *, settings: "RuntimeSettings") -> None:
         self._settings = settings
@@ -125,6 +168,32 @@ def _action_program_for_text(text: str) -> dict[str, Any] | None:
 
 def _scene_proposal_for_text(text: str) -> dict[str, Any] | None:
     lowered = text.lower()
+    explicit_recordings = _extract_exact_recording_mentions(text)
+    if explicit_recordings and _matches_any(text, r"来.*(动作|一遍|一组)", r"(动作|录制|pose).*(来|做|放)"):
+        return _build_recording_sequence_proposal(
+            explicit_recordings,
+            intent="custom_sequence",
+            summary="User requested a custom motion sequence.",
+        )
+    if _contains_any(
+        lowered,
+        text,
+        "连续",
+        "多个动作",
+        "几个动作",
+        "一组动作",
+        "组合动作",
+        "串起来",
+        "别只来一个",
+        "多来几个",
+        "灯光也变",
+        "灯光也切换",
+    ):
+        return _build_recording_sequence_proposal(
+            _select_demo_recordings(text),
+            intent="playful_sequence",
+            summary="User requested a multi-step motion demo.",
+        )
     if _contains_any(
         lowered,
         text,
@@ -212,3 +281,68 @@ def _contains_any(lowered: str, original: str, *needles: str) -> bool:
 
 def _matches_any(text: str, *patterns: str) -> bool:
     return any(re.search(pattern, text, re.IGNORECASE) for pattern in patterns)
+
+
+def _extract_requested_recordings(text: str) -> list[str]:
+    lowered = text.lower()
+    located: list[tuple[int, str]] = []
+    for recording_name in _DEMO_RECORDINGS:
+        index = lowered.find(recording_name.lower())
+        if index >= 0:
+            located.append((index, recording_name))
+    for keyword, recording_name in _RECORDING_KEYWORDS:
+        index = text.find(keyword)
+        if index >= 0:
+            located.append((index, recording_name))
+    located.sort(key=lambda entry: entry[0])
+    ordered: list[str] = []
+    for _, recording_name in located:
+        if recording_name not in ordered:
+            ordered.append(recording_name)
+    return ordered[:4]
+
+
+def _extract_exact_recording_mentions(text: str) -> list[str]:
+    lowered = text.lower()
+    located: list[tuple[int, str]] = []
+    for recording_name in _DEMO_RECORDINGS:
+        index = lowered.find(recording_name.lower())
+        if index >= 0:
+            located.append((index, recording_name))
+    located.sort(key=lambda entry: entry[0])
+    ordered: list[str] = []
+    for _, recording_name in located:
+        if recording_name not in ordered:
+            ordered.append(recording_name)
+    return ordered[:4]
+
+
+def _select_demo_recordings(text: str) -> list[str]:
+    requested = _extract_requested_recordings(text)
+    if requested:
+        return requested
+    lowered = text.lower()
+    if _contains_any(lowered, text, "狂野", "疯狂", "炸裂", "high energy", "excited"):
+        return ["excited", "happy_wiggle", "shock"]
+    if _contains_any(lowered, text, "扫描", "扫一圈", "东张西望", "scanning"):
+        return ["scanning", "curious", "nod"]
+    return ["happy_wiggle", "excited", "scanning"]
+
+
+def _build_recording_sequence_proposal(
+    recording_names: list[str],
+    *,
+    intent: str,
+    summary: str,
+) -> dict[str, Any]:
+    body = [{"type": "pose", "name": name} for name in recording_names]
+    light = [_LIGHT_STEPS[name] for name in recording_names if name in _LIGHT_STEPS]
+    return {
+        "intent": intent,
+        "priors": [f"recording:{name}" for name in recording_names],
+        "summary": summary,
+        "scene": {
+            "body": body,
+            "light": light,
+        },
+    }

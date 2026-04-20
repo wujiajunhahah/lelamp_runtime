@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from lelamp.action_dsl.compiler import compile_scene
 from lelamp.action_dsl.executor import execute_scene
+from lelamp.action_dsl.executor import execute_compiled_scene
 
 
 def test_compile_scene_lowers_gesture_and_light_nodes():
@@ -49,6 +50,45 @@ def test_execute_scene_dispatches_compiled_events():
 
     assert animation.calls == [("play", "nod")]
     assert rgb.calls == [("solid", (255, 170, 70))]
+
+
+def test_execute_compiled_scene_coalesces_multi_step_motion_and_light_sequences():
+    class _Service:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, object]] = []
+
+        def dispatch(self, event_type: str, payload: object) -> None:
+            self.calls.append((event_type, payload))
+
+    animation = _Service()
+    rgb = _Service()
+
+    compiled = {
+        "motion": [("play", "happy_wiggle"), ("play", "excited"), ("play", "scanning")],
+        "light": [
+            ("solid", (255, 170, 70)),
+            ("paint", [(255, 180, 90), (255, 120, 40)]),
+            ("solid", (90, 180, 255)),
+        ],
+    }
+
+    execute_compiled_scene(
+        compiled,
+        animation_service=animation,
+        rgb_service=rgb,
+    )
+
+    assert animation.calls == [("sequence", ["happy_wiggle", "excited", "scanning"])]
+    assert rgb.calls == [
+        (
+            "sequence",
+            [
+                ("solid", (255, 170, 70)),
+                ("paint", [(255, 180, 90), (255, 120, 40)]),
+                ("solid", (90, 180, 255)),
+            ],
+        )
+    ]
 
 
 def test_compile_scene_drops_trailing_settle_after_visible_motion():

@@ -111,6 +111,8 @@ class AnimationService:
     def handle_event(self, event_type: str, payload: Any):
         if event_type == "play":
             self._handle_play(payload)
+        elif event_type == "sequence":
+            self._handle_sequence(payload)
         elif event_type == "frames":
             self._handle_frames(payload)
         elif event_type == "startup":
@@ -143,6 +145,43 @@ class AnimationService:
         if self._current_state is not None:
             self._interpolation_frames = int(self.duration * self.fps)
             self._interpolation_target = actions[0]
+        else:
+            self._interpolation_frames = 0
+            self._interpolation_target = None
+
+    def _handle_sequence(self, recording_names: list[str]) -> None:
+        """Play multiple recordings back-to-back as one uninterrupted sequence."""
+        if not self.robot:
+            print("Robot not connected")
+            return
+        if not isinstance(recording_names, list) or not recording_names:
+            print("Sequence payload must be a non-empty list")
+            return
+
+        combined_actions: list[dict[str, float]] = []
+        valid_names: list[str] = []
+        for recording_name in recording_names:
+            if not isinstance(recording_name, str) or not recording_name.strip():
+                continue
+            actions = self._load_recording(recording_name)
+            if actions is None:
+                continue
+            combined_actions.extend(dict(action) for action in actions)
+            valid_names.append(recording_name)
+
+        if not combined_actions:
+            print("No valid recordings found for sequence playback")
+            return
+
+        self._playback_done.clear()
+        self._pending_playback_completion = False
+        self._current_recording = "sequence:" + ",".join(valid_names)
+        self._current_actions = combined_actions
+        self._current_frame_index = 0
+
+        if self._current_state is not None:
+            self._interpolation_frames = int(self.duration * self.fps)
+            self._interpolation_target = combined_actions[0]
         else:
             self._interpolation_frames = 0
             self._interpolation_target = None

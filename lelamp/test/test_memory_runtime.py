@@ -697,7 +697,7 @@ def test_agent_memory_runtime_executes_manager_action_plan_and_records_result():
         )
     )
 
-    assert animation.calls == [("play", "happy_wiggle"), ("play", "happy_wiggle")]
+    assert animation.calls == [("sequence", ["happy_wiggle", "happy_wiggle"])]
     assert rgb.calls == [("paint", [(255, 120, 40), (255, 220, 90), (70, 255, 120)])]
     assert [item["kind"] for item in item_store.items] == [
         "conversation.user_turn",

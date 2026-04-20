@@ -1,4 +1,5 @@
 import os
+import time
 from typing import Any, Iterable, List, Union
 
 from ..base import ServiceBase
@@ -12,6 +13,7 @@ except ImportError:  # pragma: no cover - optional dependency on non-Pi hosts
 
 
 ColorCode = Union[int, tuple[int, int, int], list[int]]
+_SEQUENCE_STEP_DELAY_S = 0.18
 
 
 class RGBService(ServiceBase):
@@ -58,6 +60,8 @@ class RGBService(ServiceBase):
             self._handle_solid(payload)
         elif event_type == "paint":
             self._handle_paint(payload)
+        elif event_type == "sequence":
+            self._handle_sequence(payload)
         else:
             self.logger.warning(f"Unknown event type: {event_type}")
 
@@ -89,6 +93,26 @@ class RGBService(ServiceBase):
         self.current_colors = updated_colors
         self._write_leds()
         self.logger.debug(f"Applied paint pattern with {max_pixels} colors")
+
+    def _handle_sequence(self, steps: list[tuple[str, Any]]) -> None:
+        if not isinstance(steps, list) or not steps:
+            self.logger.error("Sequence payload must be a non-empty list")
+            return
+
+        for index, step in enumerate(steps):
+            if not isinstance(step, (list, tuple)) or len(step) != 2:
+                self.logger.warning(f"Invalid sequence step at index {index}: {step!r}")
+                continue
+            event_type, payload = step
+            if event_type == "solid":
+                self._handle_solid(payload)
+            elif event_type == "paint":
+                self._handle_paint(payload)
+            else:
+                self.logger.warning(f"Unknown sequence step event type: {event_type}")
+                continue
+            if index < len(steps) - 1:
+                time.sleep(_SEQUENCE_STEP_DELAY_S)
 
     def _write_leds(self):
         if self.backend == "device":
